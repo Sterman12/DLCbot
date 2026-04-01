@@ -4,7 +4,6 @@ import fs from 'node:fs/promises';
 import { URLSearchParams } from 'node:url';
 import { Octokit} from 'octokit';
 import { loadEnvFile} from 'node:process';
-import crypto from 'node:crypto';
 import validator from "validator";
 import http from 'node:http';
 loadEnvFile('bot.env')
@@ -19,14 +18,14 @@ const EVENTSUB_WEBSOCKET_URL = 'wss://eventsub.wss.twitch.tv/ws';
 var dlcList = "DLC not set!";
 const authUrl = `https://id.twitch.tv/oauth2/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${REDIRECT_URL}&scope=user%3Abot+user%3Aread%3Achat+user%3Awrite%3Achat`;
 
-
+const globalDefaultFlags = ["canRequest"];
 class userDataJsonObject {
     // default flags are canRequest for now
-    constructor(userID, flags = ["canRequest"]) {
+    constructor(userID, flags = globalDefaultFlags) {
         this.jsonData = 
         {
             "twitch_userID" : userID,
-            "flags" : flags // an array of flags?
+            "flags" : flags // an array of flags
         }
     }  
         // dont know if this will ever get used but I guess its worth adding
@@ -50,10 +49,10 @@ class dlcRequestJsonObject {
 }
 
 class dataHandler {
-  constructor()
-  {
-
-  }
+    constructor()
+        {
+        this.cachedUsers;
+        }
 async addUserDataJson(userID){
 const userDataObject = new userDataJsonObject(userID);
 let oldData = await this.getUserDataJson();
@@ -104,7 +103,7 @@ async checkFlag(userID, flag, channel_ID) {
     });
     if (matchingIndex === -1) {
         await this.addUserDataJson(userID); // create new entry if it doesnt exist
-        return;
+        return false;
     }
     if (oldData[matchingIndex].flags.includes(flag)) {
         return true;
@@ -143,57 +142,83 @@ async removeFlag(userID, flag) {
 }
   
 }
+class websocketData {
+    constructor(EVENTSUB_WEBSOCKET_URL)
+    {
+        this.eventsub_Websocket_Url = EVENTSUB_WEBSOCKET_URL;
+        this.client;
+        this.sessionID;
+        this.cost;
+        this.maxTotalCost;
+    }
+}
+class channelData {
+    constructor(CHANNEL_ID, COOLDOWN) {
+        this.id = CHANNEL_ID
+        this.cooldownDuration = COOLDOWN
+        this.localDlcList; // todo: impelement local dlc lists (i.e. for each channel)
+        this.lastMessage;
+        this.scopes;
+    }
+    setDLC(dlcName) {
+        this.localDlcList = dlcName;
+    }
+}
 class coreBot {
     constructor(BOT_USER_ID, CLIENT_ID, CLIENT_SECRET, EVENTSUB_WEBSOCKET_URL, DATA_HANDLER_OBJ, OCTOKIT_OBJ)
     {
         this.bot_ID = BOT_USER_ID;
         this.client_ID = CLIENT_ID;
         this.client_Secret = CLIENT_SECRET;
-        this.eventsub_Websocket_Url = EVENTSUB_WEBSOCKET_URL;
+        this.websocketData = new websocketData(EVENTSUB_WEBSOCKET_URL)
         this.authCode;
         this.channelList = [];
-        this.websocketClient;
-        this.websocketSessionID;
-        this.lastMessage;
+        this.channelDataList = [];
         this.dataHandlerObject = DATA_HANDLER_OBJ;
         this.octoKitObject = OCTOKIT_OBJ;
     }
     set setAuthCode(authCode) {
         this.authCode = authCode
     }
-    set removeChannel(removedChannel) {
-        //
+    async removeChannel(removedChannel) {
+    oldData = this.channelList
+    const indexChannel = oldData.indexOf(removedChannel) 
+    oldData.splice(indexChannel, 1) // for now doesnt remove any actual subscription
     }
 
+
     addNewChannel(newChannel) {
+        if (this.websocketData.maxTotalCost == 10) {console.error("Cannot add anymore channels!"); 
+            return;
+        }
         this.channelList.push(newChannel)
     }
 
 
     async closeBot() {
         console.log("Shutting down bot instance!")
-        this.websocketClient.close()
+        this.websocketData.client.close()
     }
 
 
 
     websocketClientStart() {
-    this.websocketClient = new WebSocket(this.eventsub_Websocket_Url);
+    this.websocketData.client = new WebSocket(this.websocketData.eventsub_Websocket_Url);
 
-	this.websocketClient.on('error', console.error);
+	this.websocketData.client.on('error', console.error);
 
-	this.websocketClient.on('open', () => {
-		console.log('WebSocket connection opened to ' + this.eventsub_Websocket_Url);
+	this.websocketData.client.on('open', () => {
+		console.log('WebSocket connection opened to ' + this.websocketData.eventsub_Websocket_Url);
 	});
 
-	this.websocketClient.on('message', (data) => {   
+	this.websocketData.client.on('message', (data) => {   
         let objectJSON = JSON.parse(data.toString())
         objectJSON.timeStamp = Date.now();
 		this.handleWebSocketMessage(objectJSON);
 	});
-    this.websocketClient.on('close', () => {
+    this.websocketData.client.on('close', () => {
         console.error('websocketClient shut down!');
-        this.websocketClient.close()
+        this.websocketData.client.close()
         this.websocketClientStart();
     });
     }
@@ -215,7 +240,7 @@ class coreBot {
 			},
 			transport: {
 				method: 'websocket',
-				session_id: this.websocketSessionID
+				session_id: this.websocketData.sessionID
 			}
 		})
 	});
@@ -227,6 +252,8 @@ class coreBot {
 		process.exit(1);
 	} else {
 		const data = await response.json();
+        this.websocketData.cost = data.total_cost;
+        this.websocketData.maxTotalCost = data.max_total_cost;
 		console.log(`Subscribed to channel.chat.message [${data.data[0].id}]`);
 	}
 }  
@@ -256,12 +283,11 @@ class coreBot {
     }
 
 
-
     async handleWebSocketMessage(data) {
         switch (data.metadata.message_type) {
             case 'session_welcome': // First message you get from the WebSocket server when connecting
                 console.log("Adding new listeners!");
-                this.websocketSessionID = data.payload.session.id; // Register the Session ID it gives us
+                this.websocketData.sessionID = data.payload.session.id; // Register the Session ID it gives us
                 let loopLength = this.channelList.length; 
                 // Listen to EventSub, which joins the chatroom from your bot's account
                 for ( let i = 0; i < loopLength;i++) {
@@ -271,15 +297,10 @@ class coreBot {
                 switch (data.metadata.subscription_type) {
                     case 'channel.chat.message':
                         console.log(`MSG #${data.payload.event.broadcaster_user_login} <${data.payload.event.chatter_user_login}> <${data.timeStamp}> ${data.payload.event.message.text}`);
-
+                        
                         if(!(data.payload.event.message.text.charAt(0) == "!")) {
                                 break;
                             }
-                        if(!(coolDownElapsed(data.timeStamp, this.lastMessage))) {
-                                console.log("cooldown not expired!");
-                                break;
-                            }
-                        
                         // First, print the message to the program's console.
                         // find what channel is what sent in
                         let channel_id_sentIn = data.payload.event.broadcaster_user_id;
@@ -287,46 +308,55 @@ class coreBot {
                         let stringArray = data.payload.event.message.text.trim().split(" ")
                         let userCalling = data.payload.event.chatter_user_id
                         let dataHandling = this.dataHandlerObject;
+                        // find relevant per channel data 
+                        let channelData = await this.channelDataList.find((oldData) => {
+                        if (channel_id_sentIn == oldData.id) {return true;}
+                        else {return false;}
+                        });
+                        if (channelData == null) {console.error("A serious error has occured")}
+                        if(!(coolDownElapsed(data.timeStamp, channelData.lastMessage, channelData.cooldownDuration))) {
+                            console.log("cooldown not expired!");
+                            break; }
                         switch(lowerCasedStringArray[0]) {
                             case '!dlc':
-                                this.lastMessage = data.timeStamp; 
+                                channelData.lastMessage = data.timeStamp; 
                                 await this.sendChatMessage(await retrieveDLC(), channel_id_sentIn);
                                 break;
+                            case '!setdlc':
+                                if ((await dataHandling.checkFlag(userCalling, "canEditDLC", channel_id_sentIn))) { 
+                                channelData.lastMessage = data.timeStamp;
+                                let message = await setDLC(data.payload.event.message.text.replace(stringArray[0], ""))
+                                await this.sendChatMessage(message, channel_id_sentIn) }
+                                break;
                             case '!cock':
-                                this.lastMessage = data.timeStamp; 
+                                channelData.lastMessage = data.timeStamp; 
                                 await this.sendChatMessage(cockSize(), channel_id_sentIn);
                                 break;
                             case '!uploadrequests':
-                                this.lastMessage = data.timeStamp; 
+                                channelData.lastMessage = data.timeStamp; 
                                 await this.sendChatMessage("updating dlc requests",channel_id_sentIn);
                                 await uploadDlcRequests(this.octoKitObject);
                                 break;
-                            case '!setdlc':
-                                if (!(dataHandling.checkFlag(userCalling, "canEditDLC", channel_id_sentIn))) { console.log("Lacking permission to set dlc"); }
-                                this.lastMessage = data.timeStamp;
-                                let message = await setDLC(data.payload.event.message.text.replace(stringArray[0], ""))
-                                await this.sendChatMessage(message, channel_id_sentIn)
-                                break;
                             case '!addflag':
-                                this.lastMessage = data.timeStamp; 
+                                channelData.lastMessage = data.timeStamp; 
                                 if (dataHandling.checkFlag(userCalling, "canEditApprovedUsers", channel_id_sentIn)) {
                                 await dataHandling.addFlag(stringArray[1], stringArray[2]);
                                 this.sendChatMessage("edited flags",channel_id_sentIn);
                                 }
                                 break;
-                            case '!requests':
-                                this.lastMessage = data.timeStamp;
-                                await this.sendChatMessage("https://github.com/Sterman12/DLCDataTracking/blob/main/DLCData.json", channel_id_sentIn);
-                                break;
                             case '!removeflag':
-                                this.lastMessage = data.timeStamp; 
+                                channelData.lastMessage = data.timeStamp; 
                                 if (dataHandling.checkFlag(userCalling, "canEditApprovedUsers", channel_id_sentIn)) {
                                 await dataHandling.removeFlag(stringArray[1], stringArray[2]);
                                 this.sendChatMessage("edited flags", channel_id_sentIn);
                                 }
                                 break;
+                            case '!requests':
+                                channelData.lastMessage = data.timeStamp;
+                                await this.sendChatMessage("https://github.com/Sterman12/DLCDataTracking/blob/main/DLCData.json", channel_id_sentIn);
+                                break;
                             case '!addrequest':
-                                this.lastMessage = data.timeStamp; 
+                                channelData.lastMessage = data.timeStamp; 
                                 if ((await dataHandling.checkFlag(userCalling, "canRequest", channel_id_sentIn))) {
                                 this.sendChatMessage("You are currently banned from requesting dlc", channel_id_sentIn);
                                 }
@@ -334,20 +364,20 @@ class coreBot {
                                 this.sendChatMessage("Added your request to the list", channel_id_sentIn);
                                 break;
                             case '!imdblookup':
-                                this.lastMessage = data.timeStamp; 
+                                channelData.lastMessage = data.timeStamp; 
                                 await this.sendChatMessage(await imdbLookup(data.payload.event.message.text.replace(stringArray[0], "")), channel_id_sentIn);
                                 break;
                             case '!help':
-                                this.lastMessage = data.timeStamp;
+                                channelData.lastMessage = data.timeStamp;
                                 await this.sendChatMessage(await commandList(), channel_id_sentIn);
                                 break;
                             case '!taffer':
-                                if (!(await dataHandling.checkFlag(userCalling, "canEditApprovedUsers", channel_id_sentIn))) {
-                                this.lastMessage = data.timeStamp;
+                                channelData.lastMessage = data.timeStamp;
+                                if ((await dataHandling.checkFlag(userCalling, "canEditApprovedUsers", channel_id_sentIn))) {
                                 await this.sendChatMessage(await getTafferList(), channel_id_sentIn); }
                                 break;
                             case '!addtaffer':
-                                this.lastMessage = data.timeStamp;
+                                channelData.lastMessage = data.timeStamp;
                                 break;
                             default:
                                 console.log("was not valid command did not update cooldown!");
@@ -380,6 +410,9 @@ class coreBot {
     testBot.authCode = twitch_Token;
     testBot.addNewChannel(CHAT_CHANNEL_USER_ID);
     testBot.addNewChannel('429902083')
+    testBot.channelDataList[0] = new channelData(CHAT_CHANNEL_USER_ID, 10*1000)
+    testBot.channelDataList[1] = new channelData('429902083', 0)
+
     testBot.websocketClientStart();
 	// Start WebSocket client and register handlers
     setInterval(() => {
@@ -435,7 +468,7 @@ return code;
 
 
 async function getTafferList() {
-    let TafferList = "@handsomeScag @sterman00 @politeTrout "
+    let TafferList = "TafferArrive THE BAR IS OPENING! @handsomeScag @sterman00 @politeTrout "
     return TafferList;
 }
 async function uploadDlcRequests(octokit) {
@@ -447,22 +480,19 @@ let response = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}'
     'X-GitHub-Api-Version': '2026-03-10'
   }
 })
-let oldSha = response.data.sha;
 let dlcData = await grabDLCRequestData();
 dlcData = JSON.stringify(dlcData, null, 2);
-let newHash = crypto.createHash('sha1');
-
-newHash.update(dlcData)
-
-
-let newDigest = newHash.digest('hex');
-console.log("previous: ", oldSha)
-console.log("new :", newDigest)
-if (newDigest === oldSha) {
-    return; // early return in case it doesnt need to be updated for now this doesnt actually work as I need to 
-}
-dlcData = JSON.stringify(dlcData, null, 2);
 dlcData = btoa(dlcData); // converts to base 64;
+let oldSha = response.data.sha;
+/*let oldSha = response.data.sha;
+let newHash = crypto.createHash('sha1');
+newHash.update(dlcData)
+let newDigest = newHash.digest('hex');
+if (newDigest === oldSha) {
+    return true; // early return in case it doesnt need to be updated for now this doesnt actually work as I need to 
+}
+*/
+
 
 
 
@@ -483,7 +513,6 @@ await octokit.request('PUT /repos/{owner}/{repo}/contents/{path}', {
 })
 
 }
-
 
 async function getTokenTwitch(authCode){
 let response = await fetch ('https://id.twitch.tv/oauth2/token', {
@@ -556,11 +585,11 @@ function stringCleanup(string) {
     }
 
 
-function coolDownElapsed(currentMessage, lastMessage) {
+function coolDownElapsed(currentMessage, lastMessage, duration) {
     if (lastMessage == null) {return true;}
     console.log("time of last message: ",lastMessage);
     console.log("time of current message: ", currentMessage);
-    let cooldownDuration = 10*1000; //  10 second cooldown
+    let cooldownDuration = duration; //  10 second cooldown default
 
     if ((lastMessage + cooldownDuration) < currentMessage) 
         {
@@ -631,6 +660,7 @@ const movieURL = await convertImdbResponseToLink(data);
 return movieURL;
 }
 async function convertImdbResponseToLink(data) {
+    if ((!data ) || (data == null)) {return;}
     try {let movieURL = `https://www.imdb.com/title/${data.titles[0].id}` || `https://www.imdb.com/title/${data.titles.id}`; 
         return movieURL; }
     catch (error) {console.error(error)}
