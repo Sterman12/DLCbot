@@ -33,7 +33,6 @@ class userDataJsonObject {
             this.jsonData.flags = flags
         }
 }
-
 class dlcRequestJsonObject {
     constructor(requestString, userName, timeStamp, imdbURL) {
         this.jsonData = 
@@ -47,6 +46,64 @@ class dlcRequestJsonObject {
     }
     
 }
+
+class twitchAuthToken {
+    constructor(access_Token, expiry_Date, token_Type, refresh_Token = null, token_Scopes = null) {
+        this.tokenType = token_Type;
+        this.expires = expiry_Date;
+        this.refreshToken = refresh_Token;
+        this.accessToken = access_Token;
+        this.tokenScopes = token_Scopes;
+    }
+    doesTokenNeedRefresh(intervalCallingSeconds) {
+        if (this.refreshToken > intervalCallingSeconds) {this.refreshToken = this.refreshToken - intervalCallingSeconds}
+        else {return true;}
+    }
+    async refreshTokenCall(client_ID,client_Secret) {
+        let response = await fetch ('https://id.twitch.tv/oauth2/token', {
+        method: 'POST',
+        headers: {
+			'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: new URLSearchParams({
+		    client_id : client_ID,
+		    client_secret: client_Secret,
+            refresh_token: refresh_Token,
+		    grant_type: 'refresh_token',
+		})
+    });
+    if (response.error) {
+        console.error(response.error + " " + response.status + " " + response.message)
+        return;
+    }
+    let data = await response.json()
+    this.refreshToken = data.refresh_token;
+    this.accessToken = data.access_token;
+    this.tokenScopes = data.token_scopes;
+    this.tokenType = data.token_type;
+    return;
+    }
+
+    static async validateToken(OAUTH_TOKEN) {
+	// https://dev.twitch.tv/docs/authentication/validate-tokens/#how-to-validate-a-token
+	let response = await fetch('https://id.twitch.tv/oauth2/validate', {
+		method: 'GET',
+		headers: {
+			'Authorization': 'OAuth ' + OAUTH_TOKEN
+		}
+	});
+
+	if (response.status != 200) {
+		let data = await response.json();
+		console.error("Token is not valid. /oauth2/validate returned status code " + response.status);
+		console.error(data);
+		process.exit(1);
+	}
+	console.log("Validated token.");
+    return true;
+}
+}
+
 
 class dataHandler {
     constructor()
@@ -153,7 +210,7 @@ class websocketData {
     }
 }
 class channelData {
-    constructor(CHANNEL_ID, COOLDOWN) {
+    constructor(CHANNEL_ID, COOLDOWN = 0) {
         this.id = CHANNEL_ID
         this.cooldownDuration = COOLDOWN
         this.localDlcList; // todo: impelement local dlc lists (i.e. for each channel)
@@ -163,18 +220,19 @@ class channelData {
     setDLC(dlcName) {
         this.localDlcList = dlcName;
     }
+
 }
 class coreBot {
-    constructor(BOT_USER_ID, CLIENT_ID, CLIENT_SECRET, EVENTSUB_WEBSOCKET_URL, DATA_HANDLER_OBJ, OCTOKIT_OBJ)
+    constructor(BOT_USER_ID, CLIENT_ID, CLIENT_SECRET, EVENTSUB_WEBSOCKET_URL, OCTOKIT_OBJ)
     {
         this.bot_ID = BOT_USER_ID;
         this.client_ID = CLIENT_ID;
         this.client_Secret = CLIENT_SECRET;
-        this.websocketData = new websocketData(EVENTSUB_WEBSOCKET_URL)
         this.authCode;
         this.channelList = [];
         this.channelDataList = [];
-        this.dataHandlerObject = DATA_HANDLER_OBJ;
+        this.websocketData = new websocketData(EVENTSUB_WEBSOCKET_URL)
+        this.dataHandlerObject = new dataHandler();
         this.octoKitObject = OCTOKIT_OBJ;
     }
     set setAuthCode(authCode) {
@@ -227,7 +285,7 @@ class coreBot {
 	let response = await fetch('https://api.twitch.tv/helix/eventsub/subscriptions', {
 		method: 'POST',
 		headers: {
-			'Authorization': 'Bearer ' + this.authCode,
+			'Authorization': 'Bearer ' + this.authCode.accessToken,
 			'Client-Id': this.client_ID,
 			'Content-Type': 'application/json'
 		},
@@ -262,7 +320,7 @@ class coreBot {
 	let response = await fetch('https://api.twitch.tv/helix/chat/messages', {
 		method: 'POST',
 		headers: {
-			'Authorization': 'Bearer ' + this.authCode,
+			'Authorization': 'Bearer ' + this.authCode.accessToken,
 			'Client-Id': this.client_ID,
 			'Content-Type': 'application/json'
 		},
@@ -398,16 +456,19 @@ class coreBot {
 
 // Start executing the bot from here
 (async () => {
-    let testBot = new coreBot(BOT_USER_ID, CLIENT_ID, CLIENT_SECRET, EVENTSUB_WEBSOCKET_URL, new dataHandler(), new Octokit({
+    let testBot = new coreBot(BOT_USER_ID, CLIENT_ID, CLIENT_SECRET, EVENTSUB_WEBSOCKET_URL, new Octokit({
     auth : GITHUB_TOKEN,
     userAgent : 'DLC v1'
     }));
-    let authCodeTwitch = await getCodeTwitch();
-    let twitch_Token = await getTokenTwitch(authCodeTwitch);
+    // let authTokenTwitch = await getOauthTwitchCCGF(CLIENT_ID,CLIENT_SECRET);
+    let authCodeTwitch = await getCodeTwitchACGF()
+    let twitch_Token = await getTokenTwitchACGF(authCodeTwitch);
+
 	// Verify that the authentication is valid
-	let isTokenGood = await getAuthTwitch(twitch_Token);
+	let isTokenGood = await twitchAuthToken.validateToken(twitch_Token.accessToken);
     if (!isTokenGood) {process.exit(1)}
     testBot.authCode = twitch_Token;
+    
     testBot.addNewChannel(CHAT_CHANNEL_USER_ID);
     testBot.addNewChannel('429902083')
     testBot.channelDataList[0] = new channelData(CHAT_CHANNEL_USER_ID, 10*1000)
@@ -418,6 +479,9 @@ class coreBot {
     setInterval(() => {
         uploadDlcRequests(testBot.octoKitObject)
     },3600000);
+    setInterval(() => {
+        testBot.authCode.doesTokenNeedRefresh(10);
+    },10*1000)
 
     process.on('SIGTERM', async() => {
         await uploadDlcRequests(testBot.octoKitObject);
@@ -431,8 +495,23 @@ class coreBot {
     });
 })();
 
+async function getOauthTwitchCCGF(client_ID, client_Secret){
+    let response = await fetch ('https://id.twitch.tv/oauth2/token', {
+    method: 'POST',
+    headers: {
+			'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: new URLSearchParams({
+		client_id : client_ID,
+		client_secret: client_Secret,
+		grant_type: 'client_credentials',
+		})
+});
+    let data = await response.json()
+    return data.access_token;
 
-async function getCodeTwitch(){
+}
+async function getCodeTwitchACGF(){
 function handleServer(server) {
 return new Promise((resolve,reject) => {
 server.on('request', (request) => {
@@ -514,7 +593,7 @@ await octokit.request('PUT /repos/{owner}/{repo}/contents/{path}', {
 
 }
 
-async function getTokenTwitch(authCode){
+async function getTokenTwitchACGF(authCode){
 let response = await fetch ('https://id.twitch.tv/oauth2/token', {
     method: 'POST',
     headers: {
@@ -529,30 +608,13 @@ let response = await fetch ('https://id.twitch.tv/oauth2/token', {
 		})
 });
 const data = await response.json();
-// OAUTH_TOKEN = data.access_token;
 console.log("Access token obtained: " + data.access_token)
-return data.access_token;
+let returnToken = new twitchAuthToken(data.access_token, data.expires_in, data.token_type, data.refresh_token, data.scope)
+return returnToken;
 }
 
 
-async function getAuthTwitch(OAUTH_TOKEN) {
-	// https://dev.twitch.tv/docs/authentication/validate-tokens/#how-to-validate-a-token
-	let response = await fetch('https://id.twitch.tv/oauth2/validate', {
-		method: 'GET',
-		headers: {
-			'Authorization': 'OAuth ' + OAUTH_TOKEN
-		}
-	});
 
-	if (response.status != 200) {
-		let data = await response.json();
-		console.error("Token is not valid. /oauth2/validate returned status code " + response.status);
-		console.error(data);
-		process.exit(1);
-	}
-	console.log("Validated token.");
-    return true;
-}
 
 
 
@@ -615,12 +677,16 @@ async function grabDLCRequestData() {
     
 }
 
-async function commandList() {
+function commandList() {
     let commandList = "!dlc, !cock, !imdblookup, !addrequest, !requests";
     return commandList;
 }
 
 
+function conductorGuide() {
+    let conductorGuideLink = "";
+    return conductorGuideLink;
+}
 
 async function setDLC(dlcData) {
     if ((dlcData.trim() === "" ) || (!dlcData)) {
