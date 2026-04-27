@@ -8,6 +8,7 @@ lerna-debug.log*
 # userinfo
 dlcRequests.json
 approvedUsers.txt
+channels.js
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 

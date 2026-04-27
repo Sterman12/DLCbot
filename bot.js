@@ -1,13 +1,18 @@
 import WebSocket from 'ws';
-import open from 'open';
+import open, {apps} from 'open';
 import fs from 'node:fs/promises';
 import { URLSearchParams } from 'node:url';
 import { Octokit} from 'octokit';
-import { loadEnvFile} from 'node:process';
 import validator from "validator";
-import http from 'node:http';
-loadEnvFile('bot.env')
-
+import {v7 as uuidv7, parse} from 'uuid';
+import bs58 from 'bs58';
+import EventEmitter from 'node:events';
+import {EventSub, getTokenTwitchACGF, getCodeTwitchACGF, websocketData} from "twitchwebsocketsjs";
+import { MongoClient, ServerApiVersion } from 'mongodb';
+import {commandObject, commandsList} from './commands.js';
+import { timeStamp } from 'node:console';
+import {channelList, channelObject} from './channels.js';
+const mongo_uri = process.env.MONGO_URI;
 const BOT_USER_ID = process.env.BOT_USER_ID; // This is the User ID of the chat bot
 const CLIENT_ID = process.env.CLIENT_ID;
 const CHAT_CHANNEL_USER_ID = process.env.CHAT_CHANNEL_USER_ID; // This is the User ID of the channel that the bot will join and listen to chat messages of
@@ -15,9 +20,18 @@ const CLIENT_SECRET = process.env.CLIENT_SECRET;
 const REDIRECT_URL = process.env.REDIRECT_URL;
 const GITHUB_TOKEN = process.env.GITHUB_PERSONAL_TOKEN;
 const EVENTSUB_WEBSOCKET_URL = 'wss://eventsub.wss.twitch.tv/ws';
-var dlcList = "DLC not set!";
-const authUrl = `https://id.twitch.tv/oauth2/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${REDIRECT_URL}&scope=user%3Abot+user%3Aread%3Achat+user%3Awrite%3Achat`;
+const EVENTSUB_ENDPOINT = 'https://api.twitch.tv/helix/eventsub/subscriptions';
+const TEST_SERVER = "ws://localhost:8080/ws";
+const TEST_ENDPOINT = "http://localhost:8080/eventsub/subscriptions";
 
+
+class dlcListClass {
+    constructor() {
+    this.currentDLC = "DLC not set!";
+    }
+
+}
+let dlcList = new dlcListClass();
 const globalDefaultFlags = ["canRequest"];
 class userDataJsonObject {
     // default flags are canRequest for now
@@ -33,83 +47,113 @@ class userDataJsonObject {
             this.jsonData.flags = flags
         }
 }
+
 class dlcRequestJsonObject {
-    constructor(requestString, userName, timeStamp, imdbURL) {
+    constructor(requestString, userName, timeStamp, imdbURL, channel_ID) {
         this.jsonData = 
         {
        "dlc_request" : requestString,
        "user_name" : userName,
         "dlc_request_timestamp" : timeStamp,
+        "dlc_played_timestamp" : "not played",
         "imdb_url" : imdbURL,
-        "has_played" : "No"
+        "has_played" : "No",
+        "long_uuid" : "no uuid",
+        "short_uuid" : "no uuid",
+        "channel_requestedIn" : channel_ID
         }
     }
-    
-}
-
-class twitchAuthToken {
-    constructor(access_Token, expiry_Date, token_Type, refresh_Token = null, token_Scopes = null) {
-        this.tokenType = token_Type;
-        this.expires = expiry_Date;
-        this.refreshToken = refresh_Token;
-        this.accessToken = access_Token;
-        this.tokenScopes = token_Scopes;
-    }
-    doesTokenNeedRefresh(intervalCallingSeconds) {
-        if (this.refreshToken > intervalCallingSeconds) {this.refreshToken = this.refreshToken - intervalCallingSeconds}
-        else {return true;}
-    }
-    async refreshTokenCall(client_ID,client_Secret) {
-        let response = await fetch ('https://id.twitch.tv/oauth2/token', {
-        method: 'POST',
-        headers: {
-			'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: new URLSearchParams({
-		    client_id : client_ID,
-		    client_secret: client_Secret,
-            refresh_token: refresh_Token,
-		    grant_type: 'refresh_token',
-		})
-    });
-    if (response.error) {
-        console.error(response.error + " " + response.status + " " + response.message)
-        return;
-    }
-    let data = await response.json()
-    this.refreshToken = data.refresh_token;
-    this.accessToken = data.access_token;
-    this.tokenScopes = data.token_scopes;
-    this.tokenType = data.token_type;
+    generateUUID() {
+    const long_uuid = uuidv7();
+    this.jsonData.long_uuid = long_uuid;
+    const bytes = parse(long_uuid);
+    this.jsonData.short_uuid = bs58.encode(Buffer.from(bytes));
     return;
     }
-
-    static async validateToken(OAUTH_TOKEN) {
-	// https://dev.twitch.tv/docs/authentication/validate-tokens/#how-to-validate-a-token
-	let response = await fetch('https://id.twitch.tv/oauth2/validate', {
-		method: 'GET',
-		headers: {
-			'Authorization': 'OAuth ' + OAUTH_TOKEN
-		}
-	});
-
-	if (response.status != 200) {
-		let data = await response.json();
-		console.error("Token is not valid. /oauth2/validate returned status code " + response.status);
-		console.error(data);
-		process.exit(1);
-	}
-	console.log("Validated token.");
-    return true;
-}
 }
 
 
 class dataHandler {
     constructor()
         {
-        this.cachedUsers;
+        this.mongo_Client = new MongoClient(mongo_uri, {
+        serverApi: {
+        version: ServerApiVersion.v1,
+        strict: true,
+        deprecationErrors: true,
         }
+        });
+        this.dbName = "BotData";
+        this.userDataCollectionName = "UserData";
+        this.movieDataCollectionName = "MovieData";
+        }
+
+async openDB(dbName) {
+        try {
+            await this.mongo_Client.connect();
+            const db = await this.mongo_Client.db(dbName);
+            return db;
+
+        } catch (error) {
+            console.error('Error connecting to MongoDB:', error);
+        }
+        finally {
+            
+        }
+    }
+async addRequest(requestString, userName, timeStamp, userID, channel_ID) {
+
+    requestString = stringCleanup(requestString);    
+    const imdbURL = await imdbLookup(requestString);
+    const dateObj = new Date(timeStamp);
+    const dateObjUTC = dateObj.toUTCString();
+    const obj = new dlcRequestJsonObject(requestString, userName, dateObjUTC, imdbURL, channel_ID);
+    obj.generateUUID()
+    try {
+    const db = await this.mongo_Client.db(this.dbName);
+    let userDataCollection = db.collection(this.movieDataCollectionName);
+    await userDataCollection.insertOne((obj.jsonData))
+    console.log("Added request to MongoDB for userID: ", userID);
+}
+catch (error) {
+    console.error("Error adding user data to MongoDB: ", error)
+}
+
+}
+async setRequestPlayed(short_uuid) {
+    try {
+    const db = await this.mongo_Client.db(this.dbName);
+    let userDataCollection = db.collection(this.movieDataCollectionName);
+    await userDataCollection.findOneAndUpdate({short_uuid: short_uuid}, {$set: {has_played: "Yes", dlc_played_timestamp: new Date().toUTCString()}}, (err, result) => {
+        if (err) {
+            console.error("Error finding user data in MongoDB: ", err);
+            return;
+        }
+    });
+    console.log("Set request played in MongoDB for userID: ", userID);
+    }
+catch (error) {
+    console.error("Error setting request played in MongoDB: ", error)
+}
+
+}    
+async addUserDataMongo(userID) {
+const userDataObject = new userDataJsonObject(userID);
+try {
+    const db = await this.mongo_Client.db(this.dbName);
+    let userDataCollection = db.collection(this.userDataCollectionName);
+    await userDataCollection.insertOne((userDataObject.jsonData))
+    console.log("Added user data to MongoDB for userID: ", userID);
+}
+catch (error) {
+    console.error("Error adding user data to MongoDB: ", error)
+}
+finally {
+    
+}
+return;
+}
+/*  
 async addUserDataJson(userID){
 const userDataObject = new userDataJsonObject(userID);
 let oldData = await this.getUserDataJson();
@@ -121,8 +165,19 @@ if (err) {
 }
 });
 }
-
-
+*/
+async getUserDataMongo(userID) {
+    const db = await this.mongo_Client.db(this.dbName);
+    let userDataCollection = db.collection(this.userDataCollectionName);
+    return userDataCollection.findOne({twitch_userID: userID}, (err, result) => {
+        if (err) {
+            console.error("Error finding user data in MongoDB: ", err);
+            return;
+        }
+    
+    });
+}
+/*  
 async getUserDataJson() {
 const userData = await fs.readFile('userData.json', 'utf8', (err) => {
     if (err) {
@@ -133,7 +188,18 @@ const userData = await fs.readFile('userData.json', 'utf8', (err) => {
 let userDataParsed = await JSON.parse(userData);
 return userDataParsed;
 }
-async addFlag(userID, newFlag) {
+*/
+async addFlagMongo(userID, newFlag) {
+    const db = await this.mongo_Client.db(this.dbName);
+    let userDataCollection = db.collection(this.userDataCollectionName);
+    await userDataCollection.findOneAndUpdate({twitch_userID: userID}, {$push: {flags: newFlag}}, (err, result) => {
+        if (err) {
+            console.error("Error adding flag to user data in MongoDB: ", err);
+            return;
+        }
+});
+}
+/*  async addFlag(userID, newFlag) {
     let oldData = await this.getUserDataJson();
     const matchingIndex = await oldData.findIndex((oldData) => {
         if (userID == oldData.twitch_userID) {return true;}
@@ -151,64 +217,44 @@ async addFlag(userID, newFlag) {
 }
 });
 }
-
-async checkFlag(userID, flag, channel_ID) {
-    let oldData = await this.getUserDataJson();
-    const matchingIndex = await oldData.findIndex((oldData) => {
-        if (userID == oldData.twitch_userID) {return true;}
-        else {return false;}
+*/
+async checkFlagMongo(userID, flag) { 
+    const db = await this.mongo_Client.db(this.dbName);
+    let userDataCollection = db.collection(this.userDataCollectionName);
+    let userData = await userDataCollection.findOne({twitch_userID: userID}, (err, result) => {
+        if (err) {
+            console.error("Error finding user data in MongoDB: ", err);
+            return;
+        }
     });
-    if (matchingIndex === -1) {
-        await this.addUserDataJson(userID); // create new entry if it doesnt exist
-        return false;
+    if (userData == undefined || userData == null) { 
+        this.addUserDataMongo(userID);
+        if (globalDefaultFlags.includes(flag)) {
+            return true;
+        }
+        else {
+            return false;
+        }
     }
-    if (oldData[matchingIndex].flags.includes(flag)) {
+    if (userData.flags.includes(flag)) {
         return true;
     }
     else {
         return false;
     }
 }
-
-async removeFlag(userID, flag) {
-    let oldData =  await this.getUserDataJson();
-    const matchingIndex = await oldData.findIndex((oldData) => {
-        if (userID == oldData.twitch_userID) {return true; }
-        else {return false;}
-        });
-    if (matchingIndex === -1) {
-        await this.addUserDataJson(userID); // create new entry if it doesnt exist
-        console.log("creating new entry for: ", userID)
-        return;
-    }
-    console.log(oldData[matchingIndex], "at index: ", matchingIndex);
-    const matchingFlagIndex = await oldData[matchingIndex].flags.findIndex((value, index) => {
-        if (flag == value[index]) {return true;}
-        else {return false;}
+async removeFlagMongo(userID, flag) {
+    const db = await this.mongo_Client.db(this.dbName);
+    let userDataCollection = db.collection(this.userDataCollectionName);
+    await userDataCollection.findOneAndUpdate({twitch_userID: userID}, {$pull: {flags: flag}}, (err, result) => {
+        if (err) {
+            console.error("Error removing flag from user data in MongoDB: ", err);
+            return;
+        }
     });
-    if (matchingIndex === -1) {
-        return;
-    }
-    oldData[matchingIndex].flags.splice(matchingFlagIndex,1)
-    let jsonString = JSON.stringify(oldData,null, 2);
-    await fs.writeFile('userData.json', jsonString, err => {
-    if (err) {
-    console.error(err);
 }
-});
 }
-  
-}
-class websocketData {
-    constructor(EVENTSUB_WEBSOCKET_URL)
-    {
-        this.eventsub_Websocket_Url = EVENTSUB_WEBSOCKET_URL;
-        this.client;
-        this.sessionID;
-        this.cost;
-        this.maxTotalCost;
-    }
-}
+
 class channelData {
     constructor(CHANNEL_ID, COOLDOWN = 0) {
         this.id = CHANNEL_ID
@@ -223,7 +269,7 @@ class channelData {
 
 }
 class coreBot {
-    constructor(BOT_USER_ID, CLIENT_ID, CLIENT_SECRET, EVENTSUB_WEBSOCKET_URL, OCTOKIT_OBJ)
+    constructor(BOT_USER_ID, CLIENT_ID, CLIENT_SECRET, EVENTSUB_WEBSOCKET_URL, EVENTSUB_ENDPOINT, OCTOKIT_OBJ)
     {
         this.bot_ID = BOT_USER_ID;
         this.client_ID = CLIENT_ID;
@@ -231,25 +277,35 @@ class coreBot {
         this.authCode;
         this.channelList = [];
         this.channelDataList = [];
-        this.websocketData = new websocketData(EVENTSUB_WEBSOCKET_URL)
+        this.websocketData = new websocketData(EVENTSUB_WEBSOCKET_URL, EVENTSUB_ENDPOINT);
         this.dataHandlerObject = new dataHandler();
-        this.octoKitObject = OCTOKIT_OBJ;
+        this.createdAt = Date.now();
+        this.commandList = []; // dynamic command importation eventually clueless
+        for (let i = 0; i < commandsList.length; i++) {
+            this.importCommand(commandsList[i]);
+        }
     }
     set setAuthCode(authCode) {
-        this.authCode = authCode
+        this.authCode = authCode;
     }
-    async removeChannel(removedChannel) {
-    oldData = this.channelList
-    const indexChannel = oldData.indexOf(removedChannel) 
+    async importCommand(commandObject) {
+        // maybe I also give access to variables to pass here? hmm
+        this.commandList.push(commandObject);
+    }
+    removeChannel(removedChannel) {
+    oldData = this.channelList;
+    const indexChannel = oldData.indexOf(removedChannel);
     oldData.splice(indexChannel, 1) // for now doesnt remove any actual subscription
+
     }
 
-
-    addNewChannel(newChannel) {
-        if (this.websocketData.maxTotalCost == 10) {console.error("Cannot add anymore channels!"); 
+    addNewChannel(newChannel, cooldownLength) {
+        if (this.maxTotalCost == 10) {console.error("Cannot add anymore channels!"); 
             return;
         }
-        this.channelList.push(newChannel)
+        
+        this.channelDataList.push(new channelData(newChannel, cooldownLength));  
+        console.log("Added new channel to the bot");
     }
 
 
@@ -260,104 +316,11 @@ class coreBot {
 
 
 
-    websocketClientStart() {
-    this.websocketData.client = new WebSocket(this.websocketData.eventsub_Websocket_Url);
-
-	this.websocketData.client.on('error', console.error);
-
-	this.websocketData.client.on('open', () => {
-		console.log('WebSocket connection opened to ' + this.websocketData.eventsub_Websocket_Url);
-	});
-
-	this.websocketData.client.on('message', (data) => {   
-        let objectJSON = JSON.parse(data.toString())
-        objectJSON.timeStamp = Date.now();
-		this.handleWebSocketMessage(objectJSON);
-	});
-    this.websocketData.client.on('close', () => {
-        console.error('websocketClient shut down!');
-        this.websocketData.client.close()
-        this.websocketClientStart();
-    });
-    }
-    async registerEventSubListeners(channel_id) {
-	// Register channel.chat.message
-	let response = await fetch('https://api.twitch.tv/helix/eventsub/subscriptions', {
-		method: 'POST',
-		headers: {
-			'Authorization': 'Bearer ' + this.authCode.accessToken,
-			'Client-Id': this.client_ID,
-			'Content-Type': 'application/json'
-		},
-		body: JSON.stringify({
-			type: 'channel.chat.message',
-			version: '1',
-			condition: {
-				broadcaster_user_id: channel_id,
-				user_id: this.bot_ID
-			},
-			transport: {
-				method: 'websocket',
-				session_id: this.websocketData.sessionID
-			}
-		})
-	});
-
-	if (response.status != 202) {
-		let data = await response.json();
-		console.error("Failed to subscribe to channel.chat.message. API call returned status code " + response.status);
-		console.error(data);
-		process.exit(1);
-	} else {
-		const data = await response.json();
-        this.websocketData.cost = data.total_cost;
-        this.websocketData.maxTotalCost = data.max_total_cost;
-		console.log(`Subscribed to channel.chat.message [${data.data[0].id}]`);
-	}
-}  
-
-    async sendChatMessage(chatMessage, channel_ID) {
-	let response = await fetch('https://api.twitch.tv/helix/chat/messages', {
-		method: 'POST',
-		headers: {
-			'Authorization': 'Bearer ' + this.authCode.accessToken,
-			'Client-Id': this.client_ID,
-			'Content-Type': 'application/json'
-		},
-		body: JSON.stringify({
-			broadcaster_id : channel_ID,
-			sender_id: this.bot_ID,
-			message: chatMessage
-		})
-	});
-
-	if (response.status != 200) {
-		let data = await response.json();
-		console.error("Failed to send chat message");
-		console.error(data);
-	} else {
-		console.log("Sent chat message: " + chatMessage);
-	}
-    }
-
-
-    async handleWebSocketMessage(data) {
-        switch (data.metadata.message_type) {
-            case 'session_welcome': // First message you get from the WebSocket server when connecting
-                console.log("Adding new listeners!");
-                this.websocketData.sessionID = data.payload.session.id; // Register the Session ID it gives us
-                let loopLength = this.channelList.length; 
-                // Listen to EventSub, which joins the chatroom from your bot's account
-                for ( let i = 0; i < loopLength;i++) {
-                await this.registerEventSubListeners(this.channelList[i]); }
-                break;
-            case 'notification': // An EventSub notification has occurred, such as channel.chat.message
-                switch (data.metadata.subscription_type) {
-                    case 'channel.chat.message':
+    async websocketHandleChannelChatMessage(data) {
                         console.log(`MSG #${data.payload.event.broadcaster_user_login} <${data.payload.event.chatter_user_login}> <${data.timeStamp}> ${data.payload.event.message.text}`);
                         
                         if(!(data.payload.event.message.text.charAt(0) == "!")) {
-                                break;
+                                return;
                             }
                         // First, print the message to the program's console.
                         // find what channel is what sent in
@@ -366,6 +329,9 @@ class coreBot {
                         let stringArray = data.payload.event.message.text.trim().split(" ")
                         let userCalling = data.payload.event.chatter_user_id
                         let dataHandling = this.dataHandlerObject;
+                        if (await dataHandling.checkFlagMongo(userCalling, "isBanned")) {
+                            return;
+                        }
                         // find relevant per channel data 
                         let channelData = await this.channelDataList.find((oldData) => {
                         if (channel_id_sentIn == oldData.id) {return true;}
@@ -374,271 +340,177 @@ class coreBot {
                         if (channelData == null) {console.error("A serious error has occured")}
                         if(!(coolDownElapsed(data.timeStamp, channelData.lastMessage, channelData.cooldownDuration))) {
                             console.log("cooldown not expired!");
-                            break; }
-                        switch(lowerCasedStringArray[0]) {
-                            case '!dlc':
-                                channelData.lastMessage = data.timeStamp; 
-                                await this.sendChatMessage(await retrieveDLC(), channel_id_sentIn);
-                                break;
-                            case '!setdlc':
-                                if ((await dataHandling.checkFlag(userCalling, "canEditDLC", channel_id_sentIn))) { 
+                            return; }
+                        for (let i = 0; i < this.commandList.length; i++) {
+                            if (lowerCasedStringArray[0] == this.commandList[i].name || this.commandList[i].aliases.includes(lowerCasedStringArray[0])) {
+                                if (this.commandList[i].hasCooldown) {channelData.lastMessage = data.timeStamp};
+
+                                const dataAccessible = {
+                                    channel_id_sentIn : data.payload.event.broadcaster_user_id,
+                                    userCalling : data.payload.event.chatter_user_id,
+                                    timeStamp : data.timeStamp,
+                                    userName : data.payload.event.chatter_user_name,
+                                    stringArray : stringArray,
+                                    dlcList : dlcList,
+                                    fullText : data.payload.event.message.text,
+                                    dataHandling : dataHandling // might be dangerous and or heavy on performance?
+                                }
+                                if (this.commandList[i].isAsync ) {
+                                    const returnMessage = await this.commandList[i].functionReference.apply(dataAccessible);
+                                    if (returnMessage) {
+                                        await EventSub.sendChatMessage(returnMessage, channel_id_sentIn, this.authCode);
+                                    }
+                                }
+                                else {
+                                    const returnMessage = await this.commandList[i].functionReference.apply(dataAccessible);
+                                    if (returnMessage) {
+                                        await EventSub.sendChatMessage(returnMessage, channel_id_sentIn, this.authCode);
+                                    }
+                                }
+                            }
+                        }
+                        switch(lowerCasedStringArray[0]) { // list of commands
+                            /*case '!setdlc':
+                                if ((await dataHandling.checkFlagMongo(userCalling, "canEditDLC"))) { 
                                 channelData.lastMessage = data.timeStamp;
                                 let message = await setDLC(data.payload.event.message.text.replace(stringArray[0], ""))
-                                await this.sendChatMessage(message, channel_id_sentIn) }
-                                break;
-                            case '!cock':
+                                await EventSub.sendChatMessage(message, channel_id_sentIn, this.authCode) }
+                                break;*/
+                            /*case '!cock':
                                 channelData.lastMessage = data.timeStamp; 
-                                await this.sendChatMessage(cockSize(), channel_id_sentIn);
-                                break;
-                            case '!uploadrequests':
+                                await EventSub.sendChatMessage(cockSize(), channel_id_sentIn, this.authCode);
+                                break;*/
+                            /*case '!uploadrequests':
                                 channelData.lastMessage = data.timeStamp; 
-                                await this.sendChatMessage("updating dlc requests",channel_id_sentIn);
-                                await uploadDlcRequests(this.octoKitObject);
-                                break;
-                            case '!addflag':
-                                channelData.lastMessage = data.timeStamp; 
-                                if (dataHandling.checkFlag(userCalling, "canEditApprovedUsers", channel_id_sentIn)) {
-                                await dataHandling.addFlag(stringArray[1], stringArray[2]);
-                                this.sendChatMessage("edited flags",channel_id_sentIn);
+                                if (!(await dataHandling.checkFlagMongo(userCalling, "canEditDLC"))) {
+                                    await EventSub.sendChatMessage("You cannot use this command", channel_id_sentIn, this.authCode);
+                                    break;
                                 }
-                                break;
-                            case '!removeflag':
+                                await EventSub.sendChatMessage("updating dlc requests",channel_id_sentIn, this.authCode);
+                                break; */
+                            /*case '!addflag':
                                 channelData.lastMessage = data.timeStamp; 
-                                if (dataHandling.checkFlag(userCalling, "canEditApprovedUsers", channel_id_sentIn)) {
+                                if (dataHandling.checkFlagMongo(userCalling, "canEditApprovedUsers")) {
+                                await dataHandling.addFlagMongo(stringArray[1], stringArray[2]);
+                                EventSub.sendChatMessage("edited flags",channel_id_sentIn, this.authCode);
+                                }
+                                break;*/
+                            /*case '!removeflag':
+                                channelData.lastMessage = data.timeStamp; 
+                                if (dataHandling.checkFlagMongo(userCalling, "canEditApprovedUsers")) {
                                 await dataHandling.removeFlag(stringArray[1], stringArray[2]);
-                                this.sendChatMessage("edited flags", channel_id_sentIn);
+                                EventSub.sendChatMessage("edited flags", channel_id_sentIn, this.authCode);
                                 }
-                                break;
-                            case '!requests':
+                                break;*/
+                            /*case '!requests':
                                 channelData.lastMessage = data.timeStamp;
-                                await this.sendChatMessage("https://github.com/Sterman12/DLCDataTracking/blob/main/DLCData.json", channel_id_sentIn);
-                                break;
-                            case '!addrequest':
+                                await EventSub.sendChatMessage("https://sterman12.github.io/DLCSite/", channel_id_sentIn, this.authCode);
+                                break;  */
+                            /*case '!addrequest':
                                 channelData.lastMessage = data.timeStamp; 
-                                if ((await dataHandling.checkFlag(userCalling, "canRequest", channel_id_sentIn))) {
-                                this.sendChatMessage("You are currently banned from requesting dlc", channel_id_sentIn);
+                                if (!(await dataHandling.checkFlagMongo(userCalling, "canRequest"))) {
+                                await EventSub.sendChatMessage("You are currently banned from requesting dlc", channel_id_sentIn, this.authCode);
+                                break; }
+                                await dataHandling.addRequest(data.payload.event.message.text.replace(stringArray[0], ""), data.payload.event.chatter_user_name, data.timeStamp, userCalling, channel_id_sentIn);
+                                EventSub.sendChatMessage("Added your request to the list, website updates every hour", channel_id_sentIn, this.authCode);
+                                break;*/
+                            /*case '!setrequestplayed':
+                                channelData.lastMessage = data.timeStamp;
+                                if (!(await dataHandling.checkFlagMongo(userCalling, "canEditDLC"))) {
+                                    await EventSub.sendChatMessage("You cannot set dlc played", channel_id_sentIn, this.authCode);
+                                    break;
                                 }
-                                await addRequest(data.payload.event.message.text.replace(stringArray[0], ""), data.payload.event.chatter_user_name, data.timeStamp, userCalling, channel_id_sentIn);
-                                this.sendChatMessage("Added your request to the list", channel_id_sentIn);
-                                break;
+                                await dataHandling.setRequestPlayed(stringArray[1]);
+                                await EventSub.sendChatMessage("set dlc played status", channel_id_sentIn, this.authCode);
+                                break; */
                             case '!imdblookup':
                                 channelData.lastMessage = data.timeStamp; 
-                                await this.sendChatMessage(await imdbLookup(data.payload.event.message.text.replace(stringArray[0], "")), channel_id_sentIn);
+                                await EventSub.sendChatMessage(await imdbLookup(data.payload.event.message.text.replace(stringArray[0], "")), channel_id_sentIn, this.authCode);
                                 break;
                             case '!help':
                                 channelData.lastMessage = data.timeStamp;
-                                await this.sendChatMessage(await commandList(), channel_id_sentIn);
+                                await EventSub.sendChatMessage(await commandList(), channel_id_sentIn, this.authCode);
                                 break;
                             case '!taffer':
                                 channelData.lastMessage = data.timeStamp;
-                                if ((await dataHandling.checkFlag(userCalling, "canEditApprovedUsers", channel_id_sentIn))) {
-                                await this.sendChatMessage(await getTafferList(), channel_id_sentIn); }
+                                if ((await dataHandling.checkFlagMongo(userCalling, "canEditApprovedUsers"))) {
+                                await EventSub.sendChatMessage(await getTafferList(), channel_id_sentIn, this.authCode); }
                                 break;
-                            case '!addtaffer':
+                            case '!cooldown':
                                 channelData.lastMessage = data.timeStamp;
+                                await EventSub.sendChatMessage(("this channel currently has a " + channelData.cooldownDuration/1000 + " second cooldown."), channel_id_sentIn, this.authCode);
+                                break;
+                            case '!uptime':
+                                channelData.lastMessage = data.timeStamp;
+                                await EventSub.sendChatMessage("creatureBot has been alive since " + Math.floor((data.timeStamp-this.createdAt) / 60000) + " minutes and "+ Math.floor(((data.timeStamp-this.createdAt) / 1000)%60) +" seconds ago." , channel_id_sentIn, this.authCode);
+                                break;
+                            case '!cs':
+                                channelData.lastMessage = data.timeStamp;
+                                await EventSub.sendChatMessage("https://strawpoll.com/BDyNz0dmqyR date yet to be determined",channel_id_sentIn, this.authCode);
                                 break;
                             default:
                                 console.log("was not valid command did not update cooldown!");
                                 break;
 
-
-                        } 
-                        break;
-                }
-                break;
-        }
-
     }
-
-
     }
-
+}
 
 // Start executing the bot from here
-(async () => {
-    let testBot = new coreBot(BOT_USER_ID, CLIENT_ID, CLIENT_SECRET, EVENTSUB_WEBSOCKET_URL, new Octokit({
-    auth : GITHUB_TOKEN,
-    userAgent : 'DLC v1'
+(async function () {
+
+    let testBot = new coreBot(BOT_USER_ID, CLIENT_ID, CLIENT_SECRET, EVENTSUB_WEBSOCKET_URL, EVENTSUB_ENDPOINT, new Octokit({
+        auth: GITHUB_TOKEN,
+        userAgent: 'DLC v1'
     }));
-    // let authTokenTwitch = await getOauthTwitchCCGF(CLIENT_ID,CLIENT_SECRET);
-    let authCodeTwitch = await getCodeTwitchACGF()
-    let twitch_Token = await getTokenTwitchACGF(authCodeTwitch);
-
-	// Verify that the authentication is valid
-	let isTokenGood = await twitchAuthToken.validateToken(twitch_Token.accessToken);
-    if (!isTokenGood) {process.exit(1)}
-    testBot.authCode = twitch_Token;
     
-    testBot.addNewChannel(CHAT_CHANNEL_USER_ID);
-    testBot.addNewChannel('429902083')
-    testBot.channelDataList[0] = new channelData(CHAT_CHANNEL_USER_ID, 10*1000)
-    testBot.channelDataList[1] = new channelData('429902083', 0)
-
-    testBot.websocketClientStart();
-	// Start WebSocket client and register handlers
-    setInterval(() => {
-        uploadDlcRequests(testBot.octoKitObject)
-    },3600000);
-    setInterval(() => {
-        testBot.authCode.doesTokenNeedRefresh(10);
-    },10*1000)
-
-    process.on('SIGTERM', async() => {
-        await uploadDlcRequests(testBot.octoKitObject);
-        await testBot.closeBot()
-        process.exit(0)
+    const authUrl = `https://id.twitch.tv/oauth2/authorize?response_type=code&client_id=${CLIENT_ID}&redirect_uri=${REDIRECT_URL}&scope=user%3Abot+user%3Aread%3Achat+user%3Awrite%3Achat`;
+    // let authTokenTwitch = await getOauthTwitchCCGF(CLIENT_ID,CLIENT_SECRET);
+    let authCodeTwitch = await getCodeTwitchACGF(authUrl);
+    testBot.authCode = await getTokenTwitchACGF(authCodeTwitch, CLIENT_ID, CLIENT_SECRET, REDIRECT_URL, BOT_USER_ID);
+    testBot.websocketData.authCode = testBot.authCode;
+    testBot.websocketData.eventEmitter.on('channel.chat.message', (data) => {
+        testBot.websocketHandleChannelChatMessage(data);
     });
-    process.on('SIGINT', async() => {
-        await uploadDlcRequests(testBot.octoKitObject); 
-        await testBot.closeBot()
-        process.exit(0)
+
+    for (let i = 0; i < channelList.length; i++) {
+        console.log("Adding channel: ", channelList[i].name, " with ID: ", channelList[i].id, " and cooldown: ", channelList[i].cooldown);
+        testBot.addNewChannel(channelList[i].id, channelList[i].cooldown);
+        testBot.websocketData.addNewChannel(channelList[i].id, channelList[i].cooldown);
+    }
+    await testBot.websocketData.websocketClientStart();
+    // Start WebSocket client and register handlers
+
+    process.on('SIGTERM', async () => {
+        await testBot.closeBot();
+        process.exit(0);
     });
+    process.on('SIGINT', async () => {
+        await testBot.closeBot();
+        process.exit(0);
+    });
+    process.on('uncaughtException', (err) => {
+        console.error('Uncaught Exception:', err);
+        testBot.closeBot();
+
+    });
+    process.on('unhandledRejection', (reason, promise) => {
+        console.error('Unhandled Rejection:', reason, promise);
+        throw reason;
+    });
+
 })();
 
-async function getOauthTwitchCCGF(client_ID, client_Secret){
-    let response = await fetch ('https://id.twitch.tv/oauth2/token', {
-    method: 'POST',
-    headers: {
-			'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: new URLSearchParams({
-		client_id : client_ID,
-		client_secret: client_Secret,
-		grant_type: 'client_credentials',
-		})
-});
-    let data = await response.json()
-    return data.access_token;
 
-}
-async function getCodeTwitchACGF(){
-function handleServer(server) {
-return new Promise((resolve,reject) => {
-server.on('request', (request) => {
-    if (request.url) {
-        resolve(request.url)
-    }
-});
-
-server.on('error', (err) => {
-    console.error(err);
-    reject(err)
-})
-
-
-})
-}
-
-async function splitUrl(requestUrl) {
-    let obtainedCode = await requestUrl.slice(requestUrl.indexOf("=")+1, requestUrl.indexOf("&")).trim();
-    // console.log(fixedUrl);
-    return obtainedCode;
-}
-
-open(authUrl);
-const server = http.createServer();
-server.listen(3000);
-const serverData = await handleServer(server);
-const code = await splitUrl(serverData);
-
-server.close()
-return code;
-}
 
 
 async function getTafferList() {
-    let TafferList = "TafferArrive THE BAR IS OPENING! @handsomeScag @sterman00 @politeTrout "
+    let TafferList = "TafferArrive THE BAR IS OPENING! @handsomeScag @sterman00 @politeTrout @heythere_chat"
     return TafferList;
 }
-async function uploadDlcRequests(octokit) {
-let response = await octokit.request('GET /repos/{owner}/{repo}/contents/{path}', {
-  owner: 'Sterman12',
-  repo: 'DLCDataTracking',
-  path: 'DLCData.json',
-  headers: {
-    'X-GitHub-Api-Version': '2026-03-10'
-  }
-})
-let dlcData = await grabDLCRequestData();
-dlcData = JSON.stringify(dlcData, null, 2);
-dlcData = btoa(dlcData); // converts to base 64;
-let oldSha = response.data.sha;
-/*let oldSha = response.data.sha;
-let newHash = crypto.createHash('sha1');
-newHash.update(dlcData)
-let newDigest = newHash.digest('hex');
-if (newDigest === oldSha) {
-    return true; // early return in case it doesnt need to be updated for now this doesnt actually work as I need to 
-}
-*/
 
 
 
-
-await octokit.request('PUT /repos/{owner}/{repo}/contents/{path}', {
-  owner: 'Sterman12',
-  repo: 'DLCDataTracking',
-  path: 'DLCData.json',
-  message: 'This is an automated commit performed by a bot',
-  committer: {
-    name: 'Monalisa Octocat',
-    email: 'octocat@github.com'
-  },
-  content: dlcData,
-  sha: oldSha,
-  headers: {
-    'X-GitHub-Api-Version': '2026-03-10'
-  } 
-})
-
-}
-
-async function getTokenTwitchACGF(authCode){
-let response = await fetch ('https://id.twitch.tv/oauth2/token', {
-    method: 'POST',
-    headers: {
-			'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: new URLSearchParams({
-		client_id : CLIENT_ID,
-		client_secret: CLIENT_SECRET,
-		grant_type: 'authorization_code',
-        code: authCode,
-        redirect_uri: REDIRECT_URL
-		})
-});
-const data = await response.json();
-console.log("Access token obtained: " + data.access_token)
-let returnToken = new twitchAuthToken(data.access_token, data.expires_in, data.token_type, data.refresh_token, data.scope)
-return returnToken;
-}
-
-
-
-
-
-
-async function addRequest(requestString, userName, timeStamp, userID, channel_ID) {
-
-    requestString = stringCleanup(requestString);
-
-    var jsonString;
-    
-    let imdbURL = await imdbLookup(requestString);
-    const dateObj = new Date(timeStamp);
-    let dateObjUTC = dateObj.toUTCString();
-    const obj = new dlcRequestJsonObject(requestString, userName, dateObjUTC, imdbURL);
-    let dlcDataArray = await grabDLCRequestData();
-    dlcDataArray.push(obj.jsonData);
-    try {jsonString = JSON.stringify(dlcDataArray, null, 2)}
-    catch (error) {console.error("Invalid data: ", error.message)
-        return;
-    }
-    await fs.writeFile('dlcRequests.json', jsonString, err => {
-    if (err) {
-    console.error(err);
-    } 
-}); }
 
 function stringCleanup(string) {
     let returnString = string.trim();
@@ -664,18 +536,6 @@ function coolDownElapsed(currentMessage, lastMessage, duration) {
         return false; // if this gets trigged something very bad has happened
     }
 
-async function grabDLCRequestData() {
-    const dlcData = await fs.readFile('dlcRequests.json', 'utf8', (err) => {
-    if (err) {
-        console.error(err);
-        return;
-    }
-    });   
-    let dlcDataParsed = await JSON.parse(dlcData);
-    console.log(dlcDataParsed);
-    return dlcDataParsed;
-    
-}
 
 function commandList() {
     let commandList = "!dlc, !cock, !imdblookup, !addrequest, !requests";
@@ -703,15 +563,17 @@ async function setDLC(dlcData) {
 async function imdbLookup(movieName) {
 let movieString = movieName || "";
 if ((movieString.trim() === "" ) || (!movieString)) {
-console.log("removeFromApprovedList called without a movie name or link!");
+console.log("imdblookup called without a movie name or link!");
 return;
- }
+}
 let response = await imdbLookupCall(movieName);
 return response;
 }
 
 async function imdbLookupCall(movieName) {
+try {
 let response = await fetch(`https://api.imdbapi.dev/search/titles?query=${movieName}&limit=1`, {
+    signal: AbortSignal.timeout(5000),
     method: 'GET',
     headers: {
         'Content-type': 'application/json'
@@ -721,37 +583,15 @@ let response = await fetch(`https://api.imdbapi.dev/search/titles?query=${movieN
 if ((response.code) || (!response)) {
     console.error("Failed to retrieve imdb data: ", response)
 }
-let data = await response.json();
-const movieURL = await convertImdbResponseToLink(data);
-return movieURL;
+let data = await response.json(); 
+let movieURL = `https://www.imdb.com/title/${data.titles[0].id}` || `https://www.imdb.com/title/${data.titles.id}`;
+return movieURL; 
 }
-async function convertImdbResponseToLink(data) {
-    if ((!data ) || (data == null)) {return;}
-    try {let movieURL = `https://www.imdb.com/title/${data.titles[0].id}` || `https://www.imdb.com/title/${data.titles.id}`; 
-        return movieURL; }
-    catch (error) {console.error(error)}
+catch (error) {
+    console.error(error)
+    }
 }
 
-async function retrieveDLC() {
-    return dlcList;
-}
-function cockSize() {
-    let cockSizeInches = Math.floor(Math.random()*10);
-    var message;
-    if (cockSizeInches < 3) {
-        message = "paulieLaughingAtYou so lidl! only " + cockSizeInches + " inches"
-    }
-    if ((cockSizeInches > 4) && (cockSizeInches < 6)) {
-        message = "Creature not bad " + cockSizeInches + " inches"
-    }
-    if (cockSizeInches > 7) {
-        message = "Very big! gachiHYPER " + cockSizeInches + " inches"
-    }
-    else {
-        message = 'doctorWTF an error occurred? anyways your cock was ' + cockSizeInches + ' inches'
-    }
-    return message;
-}
 
 
 
