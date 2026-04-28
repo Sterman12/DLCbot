@@ -29,18 +29,21 @@ export class commandObject {
 
 // ── Commands list ─────────────────────────────────────────────────────────────
 // Каждая функция вызывается через .call(ctx), где ctx — объект с контекстом.
-// Доступные поля ctx: channel_id_sentIn, userCalling, timeStamp, userName,
+
+// Each function is called via .call(ctx) where ctx is the message context object.
 //   stringArray, dlcList, fullText, dataHandling,
 //   botCreatedAt, channelCooldown, commandNames
 
 export const commandsList = [];
 
 // !dlc — показать текущий DLC
+// !dlc — show the current DLC
 commandsList.push(new commandObject('!dlc', function () {
     return dlcList.currentDLC;
 }));
 
 // !setdlc — установить DLC (требует флаг canEditDLC)
+// !setdlc — install DLC (requires the canEditDLC flag)
 commandsList.push(new commandObject('!setdlc', async function () {
     if (!(await this.dataHandling.checkFlagMongo(this.userCalling, 'canEditDLC'))) {
         return "You don't have permission to use this command!";
@@ -55,6 +58,7 @@ commandsList.push(new commandObject('!setdlc', async function () {
 }, true, true, true));
 
 // !cock — генератор случайного размера
+// !cock — a random-size generator
 commandsList.push(new commandObject('!cock', function () {
     const inches = Math.floor(Math.random() * 10);
     if (inches <= 3) return `paulieLaughingAtYou so lidl! only ${inches} inches`;
@@ -63,6 +67,7 @@ commandsList.push(new commandObject('!cock', function () {
 }));
 
 // !addflag  BUGFIX: добавлен await перед checkFlagMongo
+// !addflag BUGFIX: await added before checkFlagMongo
 commandsList.push(new commandObject('!addflag', async function () {
     if (!(await this.dataHandling.checkFlagMongo(this.userCalling, 'canEditApprovedUsers'))) return;
     await this.dataHandling.addFlagMongo(this.stringArray[1], this.stringArray[2]);
@@ -70,6 +75,7 @@ commandsList.push(new commandObject('!addflag', async function () {
 }, true, true, true));
 
 // !removeflag  BUGFIX: await + правильное имя метода removeFlagMongo (было removeFlag)
+// !removeflag BUGFIX: await + the correct method name is removeFlagMongo (it was removeFlag)
 commandsList.push(new commandObject('!removeflag', async function () {
     if (!(await this.dataHandling.checkFlagMongo(this.userCalling, 'canEditApprovedUsers'))) return;
     await this.dataHandling.removeFlagMongo(this.stringArray[1], this.stringArray[2]);
@@ -103,28 +109,33 @@ commandsList.push(new commandObject('!setrequestplayed', async function () {
 }, true, true, true));
 
 // !imdblookup — перенесено из switch-блока
+// !imdblookup — moved from the switch block
 commandsList.push(new commandObject('!imdblookup', async function () {
     const query = this.fullText.replace(this.stringArray[0], '').trim();
     return (await imdbLookup(query)) || 'Nothing found on IMDB.';
 }, true, false, true));
 
 // !help — теперь динамически читает список из ctx.commandNames
+// !help — now dynamically reads the list from ctx.commandNames
 commandsList.push(new commandObject('!help', function () {
     return `Commands: ${this.commandNames}`;
 }));
 
 // !taffer — перенесено из switch-блока
+// !taffer — moved from the switch block
 commandsList.push(new commandObject('!taffer', async function () {
     if (!(await this.dataHandling.checkFlagMongo(this.userCalling, 'canEditApprovedUsers'))) return;
     return getTafferList();
 }, true, true, true));
 
 // !cooldown — показывает текущий per-user кулдаун канала
+// !cooldown — shows the current per-user cooldown of the channel
 commandsList.push(new commandObject('!cooldown', function () {
     return `This channel has a ${this.channelCooldown / 1000}s per-user cooldown.`;
 }, false));
 
 // !uptime — перенесено из switch-блока
+// !uptime — moved from the switch block
 commandsList.push(new commandObject('!uptime', function () {
     const elapsed = Date.now() - this.botCreatedAt;
     const mins = Math.floor(elapsed / 60000);
