@@ -28,6 +28,17 @@ class userDataJsonObject {
     }
 }
 
+
+class dlcLogObject {
+    constructor(dlcName, imdbLink, timeStamp, userID) {
+        this.jsonData =  {
+        "played_on" : timeStamp,
+        "dlc_name" : dlcName,
+        "imdb_link" : imdbLink,
+        "logged_by_twitchID" : userID
+        }
+    }
+}
 class dlcRequestJsonObject {
     constructor(requestString, userName, timeStamp, imdbURL, channel_ID) {
         this.jsonData = {
@@ -73,7 +84,42 @@ export async function imdbLookup(movieName) {
         return 'Could not find movie on IMDB.';
     }
 }
-
+async function getParentsGuide(dlcLink, category) {
+    let index;
+    let highestResponses = 0;
+    let highestResponsesIndex = 0;
+    try {
+        let response = await fetch(`https://api.imdbapi.dev/titles/${dlcLink}/parentsGuide`, {
+            signal: AbortSignal.timeout(5000),
+            method: 'GET',
+            headers: {
+                'Content-type': 'application/json'
+            }
+        });
+        let ratingResponse = await response.json()
+        for (let i = 0; i < ratingResponse.parentsGuide.length; i++) {
+            if (category == ratingResponse.parentsGuide[i].category) {
+                index = i;
+                break;
+            }
+        }
+        console.log(ratingResponse.parentsGuide[index].severityBreakdowns);
+        for (let i = 0; i < ratingResponse.parentsGuide[index].severityBreakdowns.length; i++) {
+            if (highestResponses < ratingResponse.parentsGuide[index].severityBreakdowns[i].voteCount) {
+                highestResponses = ratingResponse.parentsGuide[index].severityBreakdowns[i].voteCount;
+                highestResponsesIndex = i;
+                continue;
+            }
+        }
+        console.log(ratingResponse.parentsGuide[index].severityBreakdowns[highestResponsesIndex].severityLevel);
+        let returnString = `has level of category ${category} : ` + ratingResponse.parentsGuide[index].severityBreakdowns[highestResponsesIndex].severityLevel;
+        return returnString;
+    }
+    catch (error) {
+        console.error("error retrieving sexual content warning: ", error, "for:  ", dlcLink)
+        return "unsucessful in retrieving sexual content warning";
+    }
+}
 // ── Database handler ──────────────────────────────────────────────────────────
 
 export class dataHandler {
@@ -88,6 +134,7 @@ export class dataHandler {
         this.dbName                  = 'BotData';
         this.userDataCollectionName  = 'UserData';
         this.movieDataCollectionName = 'MovieData';
+        this.movieLogCollectionName = 'MovieLogs'
     }
 
     async connect() {
@@ -134,7 +181,36 @@ export class dataHandler {
             console.error('setRequestPlayed error:', err);
         }
     }
-
+    async logPlayed(dlcName, userID) {
+        try {
+            const dlcLog = new dlcLogObject(dlcName, movieURL, new Date(), userID)
+            await this._col(movieLogCollectionName).insertOne(dlcLog.jsonData)
+        }
+        catch (error) {
+            console.error("Error adding log:", error);
+            return "Couldn't log your movie! sorry";
+        }
+    }
+    async lastPlayed(dlcName) {
+        try {
+            let movieLogCollection = this._col(this.movieLogCollectionName);
+            let imdbLink = await imdbLookupCall(dlcName);
+            const movie = await movieLogCollection.find({ imdb_link: imdbLink }); // finds all of the times a movie was played
+            //if (!movie.hasNext()) {
+            //    throw new Error("Couldn't find any movie matching link");
+            //}
+            await movie.sort('played_on', -1)
+            let movies = await movie.toArray()
+            console.log(movies);
+            let doc = movies[0];
+            let dateObj = new Date(doc.played_on)
+            return dateObj.toString();
+        }
+        catch (error) {
+            console.error("Error retrieving last played date:", error);
+            return "Couldn't find your movie! sorry";
+        }
+    }
     async addUserDataMongo(userID) {
         try {
             await this._col(this.userDataCollectionName).insertOne(
