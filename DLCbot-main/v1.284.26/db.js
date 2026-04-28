@@ -74,6 +74,7 @@ export async function imdbLookup(movieName) {
     }
 }
 
+
 // ── Database handler ──────────────────────────────────────────────────────────
 
 export class dataHandler {
@@ -105,7 +106,7 @@ export class dataHandler {
     _col(collectionName) {
         return this.mongo_Client.db(this.dbName).collection(collectionName);
     }
-
+    
     async addRequest(requestString, userName, timeStamp, userID, channel_ID) {
         const clean   = stringCleanup(requestString);
         const imdbURL = await imdbLookup(clean);
