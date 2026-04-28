@@ -1,5 +1,5 @@
 
-import { imdbLookup, dlcList } from './db.js';
+import { imdbLookup, dlcList, getParentsGuide } from './db.js';
 
 // ── Cooldown helper ───────────────────────────────────────────────────────────
 
@@ -145,9 +145,9 @@ commandsList.push(new commandObject('!uptime', function () {
 
 commandsList.push(new commandObject("!getratingimdb", async function () {
     let movieName = this.fullText.replace(this.stringArray[0], "");
-    let movieURL = await this.imdbLookupCall(movieName);
+    let movieURL = await imdbLookup(movieName);
     const movieID = movieURL.split("title/")[1];
-    return await this.getParentsGuide(movieID, "SEXUAL_CONTENT");
+    return await getParentsGuide(movieID, "SEXUAL_CONTENT");
 }, true, true, true));
 
 

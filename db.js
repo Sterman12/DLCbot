@@ -84,7 +84,7 @@ export async function imdbLookup(movieName) {
         return 'Could not find movie on IMDB.';
     }
 }
-async function getParentsGuide(dlcLink, category) {
+export async function getParentsGuide(dlcLink, category) {
     let index;
     let highestResponses = 0;
     let highestResponsesIndex = 0;
@@ -194,7 +194,7 @@ export class dataHandler {
     async lastPlayed(dlcName) {
         try {
             let movieLogCollection = this._col(this.movieLogCollectionName);
-            let imdbLink = await imdbLookupCall(dlcName);
+            let imdbLink = await imdbLookup(dlcName);
             const movie = await movieLogCollection.find({ imdb_link: imdbLink }); // finds all of the times a movie was played
             //if (!movie.hasNext()) {
             //    throw new Error("Couldn't find any movie matching link");
