@@ -13,7 +13,9 @@ export class dlcListClass {
         this.currentDLC = 'DLC not set!';
     }
 }
-export const dlcList = new dlcListClass(); // singleton, импортируется в commands.js и bot.js
+export const dlcList = new dlcListClass(); 
+// singleton, импортируется в commands.js и bot.js
+// singleton, imported into commands.js and bot.js
 
 // ── Models ────────────────────────────────────────────────────────────────────
 
@@ -99,6 +101,7 @@ export class dataHandler {
     }
 
     // Внутренний хелпер — убирает повторение this.mongo_Client.db(...)...collection(...)
+    // Internal helper — removes the repetition of this.mongo_Client.db(...)...collection(...)
     _col(collectionName) {
         return this.mongo_Client.db(this.dbName).collection(collectionName);
     }
@@ -119,6 +122,7 @@ export class dataHandler {
     }
 
     // BUGFIX: был undefined `userID` в console.log — убрано
+    // BUGFIX: there was an undefined `userID` in the console.log — removed
     async setRequestPlayed(short_uuid) {
         try {
             await this._col(this.movieDataCollectionName).findOneAndUpdate(
@@ -145,7 +149,9 @@ export class dataHandler {
         const userData = await this._col(this.userDataCollectionName)
             .findOne({ twitch_userID: userID });
         if (!userData) {
-            this.addUserDataMongo(userID); // fire-and-forget, намеренно
+            this.addUserDataMongo(userID); 
+            // fire-and-forget, намеренно
+            // fire-and-forget, intentionally
             return globalDefaultFlags.includes(flag);
         }
         return userData.flags.includes(flag);
