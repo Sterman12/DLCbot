@@ -8,9 +8,8 @@ import {v7 as uuidv7, parse} from 'uuid';
 import bs58 from 'bs58';
 import EventEmitter from 'node:events';
 import {EventSub, getTokenTwitchACGF, getCodeTwitchACGF, websocketData} from "twitchwebsocketsjs";
-import { MongoClient, ServerApiVersion } from 'mongodb';
+import { MongoClient, ServerApiVersion, BSON } from 'mongodb';
 import {commandObject, commandsList} from './commands.js';
-import { timeStamp } from 'node:console';
 import {channelList, channelObject} from './channels.js';
 const mongo_uri = process.env.MONGO_URI;
 const BOT_USER_ID = process.env.BOT_USER_ID; // This is the User ID of the chat bot
@@ -24,6 +23,20 @@ const EVENTSUB_ENDPOINT = 'https://api.twitch.tv/helix/eventsub/subscriptions';
 const TEST_SERVER = "ws://localhost:8080/ws";
 const TEST_ENDPOINT = "http://localhost:8080/eventsub/subscriptions";
 
+class dataAcessible {
+    constructor(requestedData, data) {
+        this.channel_id_sentIn = data.payload.event.broadcaster_user_id,
+        this.userCalling = data.payload.event.chatter_user_id,
+        this.timeStamp = data.timeStamp,
+        this.userName = data.payload.event.chatter_user_name,
+        this.stringArray = stringArray,
+        this.dlcList = dlcList,
+        this.fullText = data.payload.event.message.text
+        for (i=0; i < requestedData.length;i++) {
+            requestedData[i].name = requestedData[i].address;
+        }
+    }
+}
 
 class dlcListClass {
     constructor() {
@@ -71,6 +84,16 @@ class dlcRequestJsonObject {
     return;
     }
 }
+class dlcLogObject {
+    constructor(dlcName, imdbLink, timeStamp, userID) {
+        this.jsonData =  {
+        "played_on" : timeStamp,
+        "dlc_name" : dlcName,
+        "imdb_link" : imdbLink,
+        "logged_by_twitchID" : userID
+        }
+    }
+}
 
 
 class dataHandler {
@@ -85,7 +108,8 @@ class dataHandler {
         });
         this.dbName = "BotData";
         this.userDataCollectionName = "UserData";
-        this.movieDataCollectionName = "MovieData";
+        this.movieDataCollectionName = "MovieDataRequests";
+        this.movieLogCollectionName = "MovieLogs"
         }
 
 async openDB(dbName) {
@@ -117,6 +141,44 @@ async addRequest(requestString, userName, timeStamp, userID, channel_ID) {
 }
 catch (error) {
     console.error("Error adding user data to MongoDB: ", error)
+}
+
+}
+async logPlayed(dlcName, userID) {
+try {
+    const movieURL = await imdbLookupCall(dlcName);
+    const db = await this.mongo_Client.db(this.dbName);
+    let movieLogCollection = db.collection(this.movieLogCollectionName);
+    const dlcLog = new dlcLogObject(dlcName, movieURL, new Date(), userID)
+    await movieLogCollection.insertOne(dlcLog.jsonData)
+    
+}
+catch (error) {
+    console.error("Error adding log:", error);
+    return "Couldn't log your movie! sorry";
+}
+}
+async lastPlayed(dlcName) {
+try {
+    const movieURL = await imdbLookupCall(dlcName);
+    const db = await this.mongo_Client.db(this.dbName);
+    let movieLogCollection = db.collection(this.movieLogCollectionName);
+    let imdbLink = await imdbLookupCall(dlcName);
+    const movie = await movieLogCollection.find({imdb_link: imdbLink}); // finds all of the times a movie was played
+    //if (!movie.hasNext()) {
+    //    throw new Error("Couldn't find any movie matching link");
+    //}
+    await movie.sort('played_on', -1)
+    let movies = await movie.toArray()
+    console.log(movies);
+
+    let doc = movies[0];
+    let dateObj = new Date(doc.played_on)
+    return dateObj.toString();
+}
+catch (error) {
+    console.error("Error retrieving last played date:", error);
+    return "Couldn't find your movie! sorry";
 }
 
 }
@@ -353,8 +415,11 @@ class coreBot {
                                     stringArray : stringArray,
                                     dlcList : dlcList,
                                     fullText : data.payload.event.message.text,
+                                    imdbLookupCall : imdbLookupCall,
+                                    getParentsGuide : getParentsGuide,
                                     dataHandling : dataHandling // might be dangerous and or heavy on performance?
                                 }
+                                // need to add a specific way to request variables from the main program
                                 if (this.commandList[i].isAsync ) {
                                     const returnMessage = await this.commandList[i].functionReference.apply(dataAccessible);
                                     if (returnMessage) {
@@ -546,6 +611,43 @@ function commandList() {
 function conductorGuide() {
     let conductorGuideLink = "";
     return conductorGuideLink;
+}
+async function getParentsGuide(dlcLink, category) {
+let index;
+let highestResponses = 0;
+let highestResponsesIndex = 0;
+try {
+let response = await fetch(`https://api.imdbapi.dev/titles/${dlcLink}/parentsGuide`, {
+    signal: AbortSignal.timeout(5000),
+    method: 'GET',
+    headers: {
+        'Content-type': 'application/json'
+    }
+});
+let ratingResponse = await response.json()
+
+for (let i=0;i<ratingResponse.parentsGuide.length; i++) {
+    if (category == ratingResponse.parentsGuide[i].category) {
+        index = i;
+        break;
+    }
+}
+console.log(ratingResponse.parentsGuide[index].severityBreakdowns);
+for (let i=0;i<ratingResponse.parentsGuide[index].severityBreakdowns.length;i++) {
+    if (highestResponses < ratingResponse.parentsGuide[index].severityBreakdowns[i].voteCount) {
+        highestResponses = ratingResponse.parentsGuide[index].severityBreakdowns[i].voteCount;
+        highestResponsesIndex = i;
+        continue;
+    }
+}
+console.log(ratingResponse.parentsGuide[index].severityBreakdowns[highestResponsesIndex].severityLevel);
+let returnString =  `has level of category ${category} : ` + ratingResponse.parentsGuide[index].severityBreakdowns[highestResponsesIndex].severityLevel;
+return returnString;
+}
+catch (error) {
+    console.error("error retrieving sexual content warning: ", error, "for:  ", dlcLink)
+    return "unsucessful in retrieving sexual content warning";
+}
 }
 
 async function setDLC(dlcData) {

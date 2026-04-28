@@ -6,6 +6,7 @@ class commandObject {
         this.aliases = [];
         this.needsFlags = needsFlags;
         this.isAsync = isAsync;
+        this.requestedData;
     }
 }
 const commandsList = [];
@@ -93,6 +94,25 @@ return "set dlc played status";
 }, true,true, true));
 
 
+commandsList.push(new commandObject("!getratingimdb", async function() {
+let movieName = this.fullText.replace(this.stringArray[0], "");
+let movieURL = await this.imdbLookupCall(movieName);
+const movieID = movieURL.split("title/")[1];
+return await this.getParentsGuide(movieID, "SEXUAL_CONTENT");
+}, true,true, true));
 
+commandsList.push(new commandObject("!log", async function() {
+if (!(await this.dataHandling.checkFlagMongo(this.userCalling, "canEditDLC"))) {
+    return "You cannot set dlc played"; }
+let movieName = this.fullText.replace(this.stringArray[0], "");
+await this.dataHandling.logPlayed(movieName, this.userCalling);
+return "logged succesfully";
+}, true,true, true));
 
+commandsList.push(new commandObject("!lastplayed", async function() {
+let movieName = this.fullText.replace(this.stringArray[0], "");
+const lastPlayedDate =  await this.dataHandling.lastPlayed(movieName);
+let message = `last played on: ${lastPlayedDate}`
+return message;
+}, true,true, true));
 export { commandsList, commandObject };
