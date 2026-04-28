@@ -143,7 +143,11 @@ commandsList.push(new commandObject('!uptime', function () {
     return `creatureBot has been alive for ${mins} minutes and ${secs} seconds.`;
 }, false));
 
+<<<<<<< HEAD
+
+=======
 // !cs
 commandsList.push(new commandObject('!cs', function () {
     return 'https://strawpoll.com/BDyNz0dmqyR date yet to be determined';
 }));
+>>>>>>> origin/main

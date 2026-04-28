@@ -112,6 +112,8 @@ class coreBot {
             const secs = channel.secondsLeft(userCalling, now);
             console.log(`Cooldown: ${userName} — ${secs}s left`);
 
+<<<<<<< HEAD
+=======
             // Уведомление в чат — раскомментируй если нужно:
             // await EventSub.sendChatMessage(
             //     `@${userName} подожди ${secs}с перед следующей командой.`,
@@ -123,6 +125,7 @@ class coreBot {
             // `@${userName} wait for ${secs}s before the next command.`,
             //     channel_id_sentIn, this.authCode
             // );
+>>>>>>> origin/main
             return;
         }
 
