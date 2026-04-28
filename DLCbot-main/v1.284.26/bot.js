@@ -21,6 +21,11 @@ class channelData {
         this.id               = channelID;
         this.cooldownDuration = cooldown;
         this.localDlcList     = null;
+        // CORE FIX: per-user cooldown instead of one global for the entire channel.
+        // Earlier: one lastMessage — one user pulled the command, all the others were blocked.
+        // Now: each user has their own timer, the others are not affected.
+        //  this.userCooldowns = new Map();   userID → timestamp of the last command
+
         // CORE FIX: per-user кулдаун вместо одного глобального на весь канал.
         // Раньше: один lastMessage — один юзер дёргал команду, все остальные блокировались.
         // Теперь: у каждого юзера свой таймер, остальные не затронуты.
@@ -77,6 +82,7 @@ class coreBot {
         const text = data.payload.event.message.text;
 
         // Игнорируем всё кроме команд
+        // Ignore everything except commands
         if (text.charAt(0) !== '!') return;
 
         const channel_id_sentIn = data.payload.event.broadcaster_user_id;
@@ -89,9 +95,11 @@ class coreBot {
         console.log(`MSG #${data.payload.event.broadcaster_user_login} <${userName}> ${text}`);
 
         // Проверка бана
+        // Checking the ban
         if (await this.db.checkFlagMongo(userCalling, 'isBanned')) return;
 
         // Ищем данные канала
+        // Searching for channel data
         const channel = this.channelDataList.find(c => c.id === channel_id_sentIn);
         if (!channel) {
             console.error('Unknown channel:', channel_id_sentIn);
@@ -99,6 +107,7 @@ class coreBot {
         }
 
         // Per-user кулдаун
+        // Per-user cooldown
         if (channel.isOnCooldown(userCalling, now)) {
             const secs = channel.secondsLeft(userCalling, now);
             console.log(`Cooldown: ${userName} — ${secs}s left`);
@@ -108,10 +117,17 @@ class coreBot {
             //     `@${userName} подожди ${secs}с перед следующей командой.`,
             //     channel_id_sentIn, this.authCode
             // );
+           
+            // Chat notification — uncomment if necessary:
+            // await EventSub.sendChatMessage(
+            // `@${userName} wait for ${secs}s before the next command.`,
+            //     channel_id_sentIn, this.authCode
+            // );
             return;
         }
 
         // Ищем команду
+        // Looking for a team
         const cmd = this.commandList.find(
             c => c.name === lowerCmd || c.aliases.includes(lowerCmd)
         );
@@ -121,9 +137,11 @@ class coreBot {
         }
 
         // Применяем кулдаун сразу, до выполнения — чтобы повторные сообщения не проскочили
+        // We apply a cooldown immediately, before execution, so that repeated messages do not slip through
         if (cmd.hasCooldown) channel.updateCooldown(userCalling, now);
 
         // Контекст, доступный командам через `this`
+        // The context available to commands via `this`
         const ctx = {
             channel_id_sentIn,
             userCalling,
@@ -164,14 +182,17 @@ class coreBot {
     bot.websocketData.authCode = bot.authCode;
 
     // Регистрируем обработчик сообщений
+    // Registering a message handler
     bot.websocketData.eventEmitter.on('channel.chat.message', (data) => {
         // .catch() снаружи — чтобы необработанное исключение не убило весь процесс
+        // .catch() outside — to prevent an unhandled exception from killing the entire process
         bot.websocketHandleChannelChatMessage(data).catch(err =>
             console.error('Unhandled error in message handler:', err)
         );
     });
 
     // Добавляем каналы
+    // Adding channels
     for (const ch of channelList) {
         console.log(`Adding channel: ${ch.name} (id: ${ch.id}, cooldown: ${ch.cooldown}ms)`);
         bot.addNewChannel(ch.id, ch.cooldown);
@@ -180,6 +201,7 @@ class coreBot {
 
     await bot.websocketData.websocketClientStart();
 
+    // Плавное завершение работы
     // Graceful shutdown
     process.on('SIGTERM', async () => { await bot.closeBot(); process.exit(0); });
     process.on('SIGINT',  async () => { await bot.closeBot(); process.exit(0); });
