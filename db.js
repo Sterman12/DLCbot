@@ -183,9 +183,9 @@ export class dataHandler {
     }
     async logPlayed(dlcName, userID) {
         try {
-            let movieURL = imdbLookup(dlcName);
+            let movieURL = await imdbLookup(dlcName);
             const dlcLog = new dlcLogObject(dlcName, movieURL, new Date(), userID)
-            await this._col(movieLogCollectionName).insertOne(dlcLog.jsonData)
+            await this._col(this.movieLogCollectionName).insertOne(dlcLog.jsonData)
         }
         catch (error) {
             console.error("Error adding log:", error);
