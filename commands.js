@@ -147,7 +147,8 @@ commandsList.push(new commandObject("!getratingimdb", async function () {
     let movieName = this.fullText.replace(this.stringArray[0], "");
     let movieURL = await imdbLookup(movieName);
     const movieID = movieURL.split("title/")[1];
-    return await getParentsGuide(movieID, "SEXUAL_CONTENT");
+    await getParentsGuide(movieID, "SEXUAL_CONTENT");
+
 }, true, true, true));
 
 

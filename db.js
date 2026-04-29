@@ -133,7 +133,7 @@ export class dataHandler {
         });
         this.dbName                  = 'BotData';
         this.userDataCollectionName  = 'UserData';
-        this.movieDataCollectionName = 'MovieData';
+        this.movieDataCollectionName = 'MovieDataRequests';
         this.movieLogCollectionName = 'MovieLogs'
     }
 
@@ -183,6 +183,7 @@ export class dataHandler {
     }
     async logPlayed(dlcName, userID) {
         try {
+            let movieURL = imdbLookup(dlcName);
             const dlcLog = new dlcLogObject(dlcName, movieURL, new Date(), userID)
             await this._col(movieLogCollectionName).insertOne(dlcLog.jsonData)
         }
