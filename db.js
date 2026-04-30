@@ -3,7 +3,7 @@ import { MongoClient, ServerApiVersion } from 'mongodb';
 import { v7 as uuidv7, parse } from 'uuid';
 import bs58 from 'bs58';
 import validator from 'validator';
-
+import { imdbAPIHandler } from './imdbFreeAPI.js'
 // ── Shared state ──────────────────────────────────────────────────────────────
 
 export const globalDefaultFlags = ['canRequest'];
@@ -16,6 +16,7 @@ export class dlcListClass {
 export const dlcList = new dlcListClass(); 
 // singleton, импортируется в commands.js и bot.js
 // singleton, imported into commands.js and bot.js
+export const imdb = new imdbAPIHandler(5000);
 
 // ── Models ────────────────────────────────────────────────────────────────────
 
@@ -65,7 +66,7 @@ class dlcRequestJsonObject {
 export function stringCleanup(str) {
     return validator.whitelist(str.trim(), 'a-zA-Z0-9 ');
 }
-
+/* 
 export async function imdbLookup(movieName) {
     const s = (movieName || '').trim();
     if (!s) {
@@ -83,8 +84,9 @@ export async function imdbLookup(movieName) {
         console.error('imdbLookup error:', err);
         return 'Could not find movie on IMDB.';
     }
-}
-export async function getParentsGuide(dlcLink, category) {
+}*/
+/*
+export async function Guide(dlcLink, category) {
     let index;
     let highestResponses = 0;
     let highestResponsesIndex = 0;
@@ -120,6 +122,7 @@ export async function getParentsGuide(dlcLink, category) {
         return "unsucessful in retrieving sexual content warning";
     }
 }
+*/
 // ── Database handler ──────────────────────────────────────────────────────────
 
 export class dataHandler {
@@ -155,7 +158,7 @@ export class dataHandler {
 
     async addRequest(requestString, userName, timeStamp, userID, channel_ID) {
         const clean   = stringCleanup(requestString);
-        const imdbURL = await imdbLookup(clean);
+        const imdbURL = await imdb.imdbLookup(clean);
         const obj     = new dlcRequestJsonObject(
             clean, userName, new Date(timeStamp).toUTCString(), imdbURL, channel_ID
         );
@@ -183,7 +186,8 @@ export class dataHandler {
     }
     async logPlayed(dlcName, userID) {
         try {
-            let movieURL = await imdbLookup(dlcName);
+            let cleanedName = stringCleanup(dlcName);
+            let movieURL = await imdb.imdbLookup(cleanedName);
             const dlcLog = new dlcLogObject(dlcName, movieURL, new Date(), userID)
             await this._col(this.movieLogCollectionName).insertOne(dlcLog.jsonData)
         }
@@ -195,7 +199,7 @@ export class dataHandler {
     async lastPlayed(dlcName) {
         try {
             let movieLogCollection = this._col(this.movieLogCollectionName);
-            let imdbLink = await imdbLookup(dlcName);
+            let imdbLink = await imdb.imdbLookup(dlcName);
             const movie = await movieLogCollection.find({ imdb_link: imdbLink }); // finds all of the times a movie was played
             //if (!movie.hasNext()) {
             //    throw new Error("Couldn't find any movie matching link");

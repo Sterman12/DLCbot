@@ -1,6 +1,5 @@
 
-import { imdbLookup, dlcList, getParentsGuide } from './db.js';
-
+import { imdb, dlcList } from './db.js';
 // ── Cooldown helper ───────────────────────────────────────────────────────────
 
 export function coolDownElapsed(currentTs, lastTs, duration) {
@@ -112,7 +111,7 @@ commandsList.push(new commandObject('!setrequestplayed', async function () {
 // !imdblookup — moved from the switch block
 commandsList.push(new commandObject('!imdblookup', async function () {
     const query = this.fullText.replace(this.stringArray[0], '').trim();
-    return (await imdbLookup(query)) || 'Nothing found on IMDB.';
+    return (await imdb.imdbLookup(query)) || 'Nothing found on IMDB.';
 }, true, true, true));
 
 // !help — теперь динамически читает список из ctx.commandNames
@@ -145,9 +144,9 @@ commandsList.push(new commandObject('!uptime', function () {
 
 commandsList.push(new commandObject("!getratingimdb", async function () {
     let movieName = this.fullText.replace(this.stringArray[0], "");
-    let movieURL = await imdbLookup(movieName);
+    let movieURL = await imdb.imdbLookup(movieName);
     const movieID = movieURL.split("title/")[1];
-    await getParentsGuide(movieID, "SEXUAL_CONTENT");
+    await imdb.getParentsGuide(movieID, "SEXUAL_CONTENT");
 
 }, true, true, true));
 
@@ -165,7 +164,7 @@ commandsList.push(new commandObject("!log", async function () {
 commandsList.push(new commandObject("!lastplayed", async function () {
     let movieName = this.fullText.replace(this.stringArray[0], "");
     const lastPlayedDate = await this.dataHandling.lastPlayed(movieName);
-    
+
     let message = `last played on: ${lastPlayedDate}`
     return message;
 }, true, true, true));
