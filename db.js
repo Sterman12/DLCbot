@@ -205,7 +205,7 @@ export class dataHandler {
             console.log(movies);
             let doc = movies[0];
             let dateObj = new Date(doc.played_on)
-            return dateObj.toString();
+            return dateObj.toUTCString();
         }
         catch (error) {
             console.error("Error retrieving last played date:", error);

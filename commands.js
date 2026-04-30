@@ -113,7 +113,7 @@ commandsList.push(new commandObject('!setrequestplayed', async function () {
 commandsList.push(new commandObject('!imdblookup', async function () {
     const query = this.fullText.replace(this.stringArray[0], '').trim();
     return (await imdbLookup(query)) || 'Nothing found on IMDB.';
-}, true, false, true));
+}, true, true, true));
 
 // !help — теперь динамически читает список из ctx.commandNames
 // !help — now dynamically reads the list from ctx.commandNames
@@ -165,6 +165,7 @@ commandsList.push(new commandObject("!log", async function () {
 commandsList.push(new commandObject("!lastplayed", async function () {
     let movieName = this.fullText.replace(this.stringArray[0], "");
     const lastPlayedDate = await this.dataHandling.lastPlayed(movieName);
+    
     let message = `last played on: ${lastPlayedDate}`
     return message;
 }, true, true, true));
